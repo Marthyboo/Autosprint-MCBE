@@ -14,12 +14,35 @@ int forwardKey = 0;
 std::atomic<bool> forwardPressed(false);
 bool sprintHeld = false;
 
+std::string GetKeyName(int vkCode) {
+	if (vkCode == VK_LCONTROL || vkCode == VK_RCONTROL || vkCode == 17) return "Control";
+	if (vkCode == VK_LSHIFT || vkCode == VK_RSHIFT || vkCode == 16) return "Shift";
+	if (vkCode == VK_LMENU || vkCode == VK_RMENU || vkCode == 18) return "Alt";
+	
+	char name[64];
+	UINT scanCode = MapVirtualKeyA(vkCode, MAPVK_VK_TO_VSC);
+	if (GetKeyNameTextA(scanCode << 16, name, sizeof(name))) {
+		return std::string(name);
+	}
+	return "Unknown (" + std::to_string(vkCode) + ")";
+}
+
 bool IsMinecraftFocused() {
 	HWND hwnd = GetForegroundWindow();
 	if (!hwnd) return false;
+
+	char className[256];
+	GetClassNameA(hwnd, className, sizeof(className));
+	std::string clName = className;
+
+	if (clName != "Bedrock" && clName != "ApplicationFrameWindow" && clName != "Windows.UI.Core.CoreWindow")
+		return false;
+
 	char title[256];
 	GetWindowTextA(hwnd, title, sizeof(title));
-	return std::string(title) == "Minecraft";
+	if (std::string(title) != "Minecraft") return false;
+
+	return true;
 }
 
 bool IsCursorHidden() {
@@ -33,7 +56,7 @@ bool IsCursorHidden() {
 void SendKey(int key, bool down) {
 	INPUT ip;
 	ip.type = INPUT_KEYBOARD;
-	ip.ki.wVk = key;
+	ip.ki.wVk = (WORD)key;
 	ip.ki.wScan = 0;
 	ip.ki.dwFlags = down ? 0 : KEYEVENTF_KEYUP;
 	ip.ki.time = 0;
@@ -69,16 +92,11 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
 	if (nCode >= 0)
 	{
 		PKBDLLHOOKSTRUCT p = (PKBDLLHOOKSTRUCT)lParam;
-		if (p->vkCode == forwardKey)
+
+		if (p->vkCode == (DWORD)forwardKey)
 		{
-			if (wParam == WM_KEYDOWN)
-			{
-				forwardPressed.store(true);
-			}
-			else if (wParam == WM_KEYUP)
-			{
-				forwardPressed.store(false);
-			}
+			if (wParam == WM_KEYDOWN) forwardPressed.store(true);
+			else if (wParam == WM_KEYUP) forwardPressed.store(false);
 		}
 	}
 	return CallNextHookEx(NULL, nCode, wParam, lParam);
@@ -100,7 +118,9 @@ std::string FindOptionsPath() {
 	if (!appData.empty()) {
 		fs::path bedrockUsersPath = fs::path(appData) / "Minecraft Bedrock" / "Users";
 		if (fs::exists(bedrockUsersPath) && fs::is_directory(bedrockUsersPath)) {
-			for (const auto& entry : fs::directory_iterator(bedrockUsersPath)) {
+			std::error_code ec;
+			for (const auto& entry : fs::directory_iterator(bedrockUsersPath, ec)) {
+				if (ec) break;
 				if (entry.is_directory()) {
 					fs::path potentialPath = entry.path() / "games" / "com.mojang" / "minecraftpe" / "options.txt";
 					if (fs::exists(potentialPath)) {
@@ -131,15 +151,21 @@ int main()
 				if (line.find("keyboard_type_0_key.forward") != std::string::npos) {
 					size_t sep = line.find(':');
 					if (sep != std::string::npos) {
-						forwardKey = std::stoi(line.substr(sep + 1));
-						foundForward = true;
+						std::string val = line.substr(sep + 1);
+						if (!val.empty() && std::isdigit(val[0])) {
+							forwardKey = std::atoi(val.c_str());
+							foundForward = true;
+						}
 					}
 				}
 				if (line.find("keyboard_type_0_key.sprint") != std::string::npos) {
 					size_t sep = line.find(':');
 					if (sep != std::string::npos) {
-						sprintKey = std::stoi(line.substr(sep + 1));
-						foundSprint = true;
+						std::string val = line.substr(sep + 1);
+						if (!val.empty() && std::isdigit(val[0])) {
+							sprintKey = std::atoi(val.c_str());
+							foundSprint = true;
+						}
 					}
 				}
 			}
@@ -148,6 +174,7 @@ int main()
 	}
 
 	if (!foundForward || !foundSprint) {
+		std::cout << "Could not auto-detect keys from options.txt.\n";
 		std::cout << "Forward Key Code (Default 87 for 'W'): ";
 		if (!(std::cin >> forwardKey)) forwardKey = 87;
 		std::cout << "Sprint Key Code (Default 17 for 'Ctrl'): ";
@@ -170,6 +197,12 @@ int main()
     | |_| | |\  |
      \___/|_| \_|
 )" << std::endl;
+
+	std::cout << "---------------------------------------------------" << std::endl;
+	std::cout << "[Config] Detected Forward: " << GetKeyName(forwardKey) << std::endl;
+	std::cout << "[Config] Detected Sprint:  " << GetKeyName(sprintKey) << std::endl;
+	std::cout << "---------------------------------------------------" << std::endl;
+	std::cout << "Status: Running..." << std::endl;
 
 	std::thread worker(SprintLoop);
 	worker.detach();
